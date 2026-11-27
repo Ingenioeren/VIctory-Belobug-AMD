@@ -1926,6 +1926,26 @@ fn timing() -> bool {
     *ON.get_or_init(|| crate::switch::on("VICTORY_GPU_TIMING"))
 }
 
+/// `VICTORY_SPLIT_SUBMIT=N` (off by default): a submission goes to the
+/// queue as one ExecuteCommandLists per N of its runs (each run with its
+/// prelude) instead of one call for all, still followed by one signal (and,
+/// in order, one wait). Sent ahead (late wait), the cuts add to those of
+/// `VICTORY_JOIN_PARTS`. On a 12 GB RDNA2 card near its memory budget the
+/// timing run (`VICTORY_GPU_TIMING`), which sends each list on its own,
+/// took 209 ms of card time a frame against 800-1250 ms for the same frames
+/// in one call: every call's memory has to be resident together, and a call
+/// that names more than fits is paged.
+fn split_submit() -> usize {
+    static N: OnceLock<usize> = OnceLock::new();
+    *N.get_or_init(|| {
+        let n = std::env::var("VICTORY_SPLIT_SUBMIT").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+        if n > 0 {
+            tracing::info!(runs_per_call = n, "submissions split into one ExecuteCommandLists per {n} runs (VICTORY_SPLIT_SUBMIT)");
+        }
+        n
+    })
+}
+
 /// Names a host object for the device-removed report, which names the
 /// allocations a page fault hit (only with device-removed data on), or for
 /// the frame recorder (`VICTORY_RECORD`).
@@ -5977,7 +5997,16 @@ impl Host {
                 lists.push(Some(behind));
                 firsts.iter_mut().for_each(|first| *first += 1);
             }
-            let cuts: Vec<usize> = parts.iter().filter_map(|&n| firsts.get(n).copied()).collect();
+            let mut cuts: Vec<usize> = parts.iter().filter_map(|&n| firsts.get(n).copied()).collect();
+            // `VICTORY_SPLIT_SUBMIT`: the same cut at every Nth run's first
+            // list as in order, so one call does not name a whole
+            // submission's memory at once.
+            if let n @ 1.. = split_submit() {
+                cuts.extend(firsts.iter().copied().skip(n).step_by(n));
+                cuts.retain(|&c| c > 0 && c < lists.len());
+                cuts.sort_unstable();
+                cuts.dedup();
+            }
             // SAFETY: closed lists; the fence is ours.
             let signalled = unsafe {
                 let mut from = 0;
@@ -6032,12 +6061,27 @@ impl Host {
         #[cfg(not(feature = "diagnostics"))]
         let groups = [&lists[..]];
         submitting(2, runs.len());
+        // `VICTORY_SPLIT_SUBMIT`: where the one call for all is cut (only
+        // when the lists go as one group, not in a timing run).
+        let cuts: Vec<usize> = match split_submit() {
+            0 => Vec::new(),
+            _ if groups.len() != 1 => Vec::new(),
+            n => firsts.iter().copied().skip(n).step_by(n).filter(|&c| c > 0 && c < lists.len()).collect(),
+        };
         for (i, group) in groups.iter().enumerate() {
             *submitted += 1;
             let started = std::time::Instant::now();
             // SAFETY: closed lists; the fence and event are ours.
             unsafe {
-                self.queue.ExecuteCommandLists(group);
+                if cuts.is_empty() || group.len() != lists.len() {
+                    self.queue.ExecuteCommandLists(group);
+                } else {
+                    let mut from = 0;
+                    for to in cuts.iter().copied().chain([group.len()]) {
+                        self.queue.ExecuteCommandLists(&group[from..to]);
+                        from = to;
+                    }
+                }
                 self.card_sent();
                 let waited = self
                     .queue
