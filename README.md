@@ -1,3 +1,5 @@
+> **Branch `midrange-amd` of Ingenioeren/VIctory-Belobug-AMD:** tuned for mid-range AMD cards with 32 GB of RAM. See [README-midrange.md](README-midrange.md).
+
 # VIctory on an RX 7900 XTX
 
 A fork of [VIctory](https://github.com/Marvisak/VIctory), a compatibility layer
