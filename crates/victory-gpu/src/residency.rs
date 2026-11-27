@@ -90,9 +90,24 @@ pub(crate) fn allow_staging_growth(bake: bool) -> bool {
     has_growth_reserve(sample_commit(now), bake)
 }
 
+/// The budgets of a smaller PC: with 32 GiB of RAM or less, or forced with
+/// `VICTORY_RESIDENCY_LIMITED=1` (`=0` forces them off). On a 48 GiB PC with
+/// a 12 GB RDNA2 card the driver still lost the device as the world streamed
+/// in until these were forced on (Belobug fix loop, iterations 17-18).
 pub(crate) fn limited_host_ram() -> bool {
     static LIMITED: OnceLock<bool> = OnceLock::new();
-    *LIMITED.get_or_init(|| memory_status().is_some_and(|s| s.ullTotalPhys <= 32 * GIB))
+    *LIMITED.get_or_init(|| {
+        let forced = std::env::var("VICTORY_RESIDENCY_LIMITED").ok();
+        let limited = match forced.as_deref() {
+            Some("1") => true,
+            Some("0") => false,
+            _ => memory_status().is_some_and(|s| s.ullTotalPhys <= 32 * GIB),
+        };
+        if forced.is_some() {
+            tracing::info!(limited, "host-memory budgets of a smaller PC (VICTORY_RESIDENCY_LIMITED)");
+        }
+        limited
+    })
 }
 
 fn next_pressure(was: bool, physical: u64, commit: u64) -> bool {
