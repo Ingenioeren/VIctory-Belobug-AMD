@@ -1,3 +1,5 @@
+> **Branch `midrange-foxhound` of Ingenioeren/VIctory-Belobug-AMD:** foxhound with two changes for mid-range AMD cards. See [README-midrange.md](README-midrange.md).
+
 # foxhound
 
 A fork of [VIctory](https://github.com/Marvisak/VIctory), a compatibility layer that runs an Xbox Series title
