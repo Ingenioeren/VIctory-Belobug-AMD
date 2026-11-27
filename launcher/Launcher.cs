@@ -36,8 +36,8 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("Settings and start for the foxhound layer")]
 [assembly: AssemblyCompany("readmet3xt-lab")]
 [assembly: AssemblyCopyright("GPL-3.0-or-later")]
-[assembly: AssemblyVersion("0.2.1.0")]
-[assembly: AssemblyFileVersion("0.2.1.0")]
+[assembly: AssemblyVersion("0.2.2.0")]
+[assembly: AssemblyFileVersion("0.2.2.0")]
 
 namespace Foxhound
 {
@@ -48,6 +48,36 @@ namespace Foxhound
     {
         [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
         [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+        [DllImport("dxgi.dll")] public static extern int CreateDXGIFactory1([In] ref Guid iid, out IDxgiFactory1 factory);
+    }
+
+    // DXGI's list of graphics adapters (only the calls the card choice makes; the others hold their
+    // places in the interfaces' tables).
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct DxgiAdapterDesc1
+    {
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string Description;
+        public uint VendorId, DeviceId, SubSysId, Revision;
+        public UIntPtr DedicatedVideoMemory, DedicatedSystemMemory, SharedSystemMemory;
+        public uint LuidLow;
+        public int LuidHigh;
+        public uint Flags;
+    }
+
+    [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("29038f61-3839-4626-91fd-086879011a05")]
+    interface IDxgiAdapter1
+    {
+        void SetPrivateData(); void SetPrivateDataInterface(); void GetPrivateData(); void GetParent();
+        void EnumOutputs(); void GetDesc(); void CheckInterfaceSupport();
+        [PreserveSig] int GetDesc1(out DxgiAdapterDesc1 desc);
+    }
+
+    [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("770aae78-f26f-4dba-a829-253c83d1b387")]
+    interface IDxgiFactory1
+    {
+        void SetPrivateData(); void SetPrivateDataInterface(); void GetPrivateData(); void GetParent();
+        void EnumAdapters(); void MakeWindowAssociation(); void GetWindowAssociation(); void CreateSwapChain(); void CreateSoftwareAdapter();
+        [PreserveSig] int EnumAdapters1(uint index, out IDxgiAdapter1 adapter);
     }
 
     [ComImport, Guid("00021401-0000-0000-C000-000000000046")] class ShellLinkObject { }
@@ -136,7 +166,74 @@ namespace Foxhound
         }
     }
 
-    // The graphics card with the most memory of its own (the one a run uses).
+    // Whether Windows can give programs the memory the game needs: RAM and page file together (the
+    // commit limit). While the game runs the test PC commits about 48 GB in all (31 GB of RAM, the rest
+    // in its page file); past the limit allocations fail and the title stops ("Failed to allocate ...").
+    // A page file whose size Windows manages grows as needed: no warning then.
+    static class MemoryCheck
+    {
+        [StructLayout(LayoutKind.Sequential)]
+        class Status
+        {
+            public uint Length = 64;
+            public uint Load;
+            public ulong TotalPhys, AvailPhys, TotalPageFile, AvailPageFile, TotalVirtual, AvailVirtual, AvailExtended;
+        }
+
+        [DllImport("kernel32.dll")] static extern bool GlobalMemoryStatusEx([In, Out] Status s);
+
+        // RAM and page file at least, in GB.
+        const double Needed = 52;
+
+        // Null when there is enough, else the warning's text.
+        public static string Warning()
+        {
+            Status s = new Status();
+            if (!GlobalMemoryStatusEx(s)) return null;
+            double ram = s.TotalPhys / 1073741824.0;
+            double most = MostPageFileGb();
+            if (most < 0 || ram + most >= Needed) return null;
+            string file = most == 0 ? "no page file" : string.Format("a page file of at most {0:0} GB", most);
+            return string.Format(
+                "Windows can give programs at most {0:0} GB of memory on this PC: {1:0} GB of RAM and {2}.\n\n" +
+                "While the game runs, the test PC uses about 48 GB of it. When Windows runs out, the game stops, often with \"Failed to allocate\".\n\n" +
+                "Fix: Start, type \"View advanced system settings\", then Performance: Settings, Advanced, Virtual memory: Change. Tick \"Automatically manage paging file size for all drives\" (or set a maximum of at least {3:0} MB), then restart Windows.\n\n" +
+                "Play anyway?",
+                ram + most, ram, file, Math.Ceiling(Needed - ram) * 1024);
+        }
+
+        // The most the page files may grow to, in GB: -1 when Windows manages a size (it grows as
+        // needed) or the setting cannot be read.
+        static double MostPageFileGb()
+        {
+            try
+            {
+                using (RegistryKey k = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management"))
+                {
+                    string[] files = k == null ? null : k.GetValue("PagingFiles") as string[];
+                    if (files == null) return -1;
+                    double sum = 0;
+                    foreach (string f in files)
+                    {
+                        string[] p = f.Trim().Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                        if (p.Length == 0) continue;
+                        if (p[0].StartsWith("?") || p.Length < 3) return -1;    // managed by Windows
+                        long min, max;
+                        if (!long.TryParse(p[1], out min) || !long.TryParse(p[2], out max)) return -1;
+                        if (min == 0 && max == 0) return -1;                    // "System managed size"
+                        sum += max / 1024.0;
+                    }
+                    return sum;                                                 // 0: no page file
+                }
+            }
+            catch (Exception) { return -1; }
+        }
+    }
+
+    // The graphics card a run uses, by the layer's rule: the first hardware adapter whose name holds
+    // VICTORY_ADAPTER (a further switch or the environment), else the one with the most memory of its own.
+    // The choice is DXGI's: the registry's figure for an integrated GPU can be larger than a graphics
+    // card's (issue #14). The size is the registry's for the chosen card where it has one.
     class Card
     {
         public string Name = "";
@@ -145,6 +242,50 @@ namespace Foxhound
         public bool Amd { get { return Name.IndexOf("AMD", StringComparison.OrdinalIgnoreCase) >= 0 || Name.IndexOf("Radeon", StringComparison.OrdinalIgnoreCase) >= 0; } }
 
         public static Card Detect()
+        {
+            string named = Environment.GetEnvironmentVariable("VICTORY_ADAPTER") ?? "";
+            foreach (string raw in Store.Load().Get("extra", "").Split('\n'))
+            {
+                string line = raw.Trim();
+                int eq = line.IndexOf('=');
+                if (eq <= 0 || line.StartsWith("#")) continue;
+                string key = line.Substring(0, eq).Trim().ToUpperInvariant();
+                if (key == "VICTORY_ADAPTER" || key == "ADAPTER") named = line.Substring(eq + 1).Trim();
+            }
+            named = named.Trim();
+            Card best = new Card();
+            try
+            {
+                Guid iid = typeof(IDxgiFactory1).GUID;
+                IDxgiFactory1 factory;
+                if (Native.CreateDXGIFactory1(ref iid, out factory) == 0 && factory != null)
+                {
+                    long most = -1;
+                    for (uint i = 0; i < 64; i++)
+                    {
+                        IDxgiAdapter1 a;
+                        if (factory.EnumAdapters1(i, out a) != 0 || a == null) break;
+                        DxgiAdapterDesc1 d;
+                        int hr = a.GetDesc1(out d);
+                        Marshal.ReleaseComObject(a);
+                        if (hr != 0 || (d.Flags & 2) != 0) continue;   // 2: the software adapter
+                        long own = (long)d.DedicatedVideoMemory.ToUInt64();
+                        string name = (d.Description ?? "").Trim();
+                        if (named.Length > 0 && name.IndexOf(named, StringComparison.OrdinalIgnoreCase) >= 0) { best.Name = name; best.Gb = own / 1073741824.0; break; }
+                        if (own > most) { most = own; best.Name = name; best.Gb = own / 1073741824.0; }
+                    }
+                    Marshal.ReleaseComObject(factory);
+                }
+            }
+            catch (Exception) { }
+            if (best.Name.Length == 0) return FromRegistry(null);
+            Card listed = FromRegistry(best.Name);
+            if (listed.Gb > 0) best.Gb = listed.Gb;
+            return best;
+        }
+
+        // The registry's cards: the one named (null: the one with the most memory).
+        static Card FromRegistry(string only)
         {
             Card best = new Card();
             try
@@ -162,6 +303,7 @@ namespace Foxhound
                                 object size = k.GetValue("HardwareInformation.qwMemorySize");
                                 object name = k.GetValue("DriverDesc");
                                 if (size == null || name == null) continue;
+                                if (only != null && !string.Equals(name.ToString().Trim(), only, StringComparison.OrdinalIgnoreCase)) continue;
                                 double gb = Convert.ToInt64(size) / 1073741824.0;
                                 if (gb > best.Gb) { best.Gb = gb; best.Name = name.ToString(); }
                             }
@@ -248,6 +390,8 @@ namespace Foxhound
             "VICTORY_SOFT_VIEWS=copies", "VICTORY_TEXTURE_POOL=1", "VICTORY_RIPE_BLOCKS=0", "VICTORY_TEXTURE_NO_WAIT=1",
             "VICTORY_TEXTURE_CATCHUP=0", "VICTORY_TEXTURE_STAGE_MS=16", "VICTORY_LEVELS_ON_DEMAND=0", "VICTORY_PRELUDE_UPLOADS=1",
             "VICTORY_SHOW_NEW_LATER=1", "VICTORY_POOL_SMALL=0", "VICTORY_TABLED_REREAD=1", "VICTORY_QUEUE_HOST_TEXTURES=0",
+            // A frame's texture passes within 8 ms together; helpers woken at each submission's start (PR #13).
+            "VICTORY_TEXSPK_PASS_MS=8", "VICTORY_PASSES_HOT=1",
             "VICTORY_HEAP_SYNC_FIRST=1", "VICTORY_SYNC_IN_PLACE=1", "VICTORY_SPANS_QUICK=1", "VICTORY_SYNC_FINE=1",
             "VICTORY_HEAP_SYNC_AT_SUBMIT=1", "VICTORY_HELPER_PRIORITY=1", "VICTORY_AMBIENT=0.8", "VICTORY_AMBIENT_AIR=1.5",
             "VICTORY_AMBIENT_SPECULAR=1", "VICTORY_EARLY_DEPTH=1", "VICTORY_LEAVE_OUT=02384a60fda6f2d0,731a39171b568298",
@@ -1126,6 +1270,8 @@ namespace Foxhound
             if (!File.Exists(Victory)) { status.Text = "victory.exe is not beside this launcher."; return; }
             string exe = store.Get("game_exe", "");
             if (exe.Length == 0 || !File.Exists(exe)) { PickGame(); exe = store.Get("game_exe", ""); if (exe.Length == 0 || !File.Exists(exe)) return; }
+            string memory = MemoryCheck.Warning();
+            if (memory != null && MessageBox.Show(this, memory, "Foxhound", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
             Dictionary<string, string> env = Settings.Environment_(store, card);
             env["VICTORY_GAME_DIR"] = Path.GetDirectoryName(exe);
             string console = Settings.SeriesS(store) ? "series-s" : "series-x";

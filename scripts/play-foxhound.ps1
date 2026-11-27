@@ -1,4 +1,4 @@
-# Starts your own copy of the title on foxhound with the settings tested on an RTX 4070 SUPER (Series X profile,
+﻿# Starts your own copy of the title on foxhound with the settings tested on an RTX 4070 SUPER (Series X profile,
 # 2560x1440 output, DLSS Quality when NVIDIA Streamline is set up).
 #
 #   .\scripts\play-foxhound.ps1 -Exe 'D:\MyDump\game_scarlett_master.exe'
@@ -50,6 +50,8 @@ $settings = @{
     VICTORY_TEXTURE_STAGE_MS = '16'; VICTORY_LEVELS_ON_DEMAND = '0'
     VICTORY_PRELUDE_UPLOADS = '1'; VICTORY_SHOW_NEW_LATER = '1'; VICTORY_POOL_SMALL = '0'; VICTORY_TABLED_REREAD = '1'
     VICTORY_QUEUE_HOST_TEXTURES = '0'
+    # A frame's texture passes within 8 ms together; helpers woken at each submission's start (PR #13)
+    VICTORY_TEXSPK_PASS_MS = '8'; VICTORY_PASSES_HOT = '1'
     # Descriptor heaps' records
     VICTORY_HEAP_SYNC_FIRST = '1'; VICTORY_SYNC_IN_PLACE = '1'; VICTORY_SPANS_QUICK = '1'; VICTORY_SYNC_FINE = '1'
     VICTORY_HEAP_SYNC_AT_SUBMIT = '1'

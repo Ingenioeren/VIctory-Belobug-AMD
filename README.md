@@ -93,6 +93,10 @@ the run (a second start, not a first). 30 fps (33.3 ms) is the title's own limit
 | Heavier scenes past the boat ride | one played session: four minutes at 16 to 21 fps with 8,000 draws a frame (before this release) |
 | Memory | flat for 25 minutes: 27 GB committed (keep the page file on), 14 to 21 GB of RAM in use, 11.7 GB of VRAM on the 12 GB card. Before this release: 25 GB growing to 34 GB in 20 minutes |
 
+These are pre.3's. pre.4 was measured in shorter runs only (9 minutes through the launcher, three 7-minute
+diagnostics runs): opening cutscenes 36.0 ms mean (pre.3: 36.3), the first minute of driving 38.7 ms (40.2),
+committed memory about 0.8 GB lower at the same point, no difference in the pictures.
+
 DLSS mode against cutscene frame time (same run, before the last fix; gameplay is 33.3 ms in all three):
 
 | Mode | Mean | Seconds at 40 ms or more (of 256) |
@@ -135,6 +139,16 @@ What is known to be wrong:
 
 Fixed since the first public build:
 
+- **DLSS greyed out on a PC with integrated graphics** (issue #14): the launcher took the card with the largest
+  memory figure in the registry, which an integrated GPU can inflate, and the game made its device on Windows'
+  first adapter, which can be the integrated one. The launcher, the warm-up, the game and DLSS now all take the card
+  with the most memory of its own (`VICTORY_ADAPTER` names another).
+- **Slower and slower over a long session on cards under 12 GB** (issue #12): each look for textures to let go
+  went again through every texture already let go: 3 ms a look after a minute, 14 ms after 30 on a 10 GB card.
+  Those are passed by now.
+- **Crashes from Windows running out of memory**: the launcher warns before Play when RAM and page file are
+  under 52 GB together, and the helper lists of the graphics driver's command lists are pooled (about 190 alive
+  instead of about 1,100).
 - **Memory leak in long play** (reports: 5 fps after 10 minutes, lag and stuttering sound): the title leaves
   leftover bytes in unused fields of the views it places in memory, so the layer took most of them for new ones
   and kept them all: about 3 GB more every 20 minutes, frame time past 45 ms. The unused fields are cleared now;
@@ -243,6 +257,9 @@ linked, and requests for them are closed without an answer.
 
 - **Windows 11** (x64), a CPU with AVX2, 32 GB of RAM or more, an SSD. Windows 10's own Direct3D 12 lacks the
   Shader Model 6.6 descriptor heaps that every translated shader uses: there the program says so and stops.
+- **RAM and page file together at least 52 GB**, or a page file whose size Windows manages (the default). While
+  the game runs the test PC commits about 48 GB in all; past Windows' limit the title stops ("Failed to
+  allocate ..."). The launcher warns before Play when the page file is off or too small, and says how to fix it.
 - An NVIDIA GeForce RTX GPU with a recent driver for DLSS (RTX 40 or later for Frame Generation, with
   hardware-accelerated GPU scheduling on). Any Direct3D 12 GPU with shader model 6.6 and mesh shaders runs the
   layer without DLSS.
@@ -351,6 +368,10 @@ Every `VICTORY_...` switch is described in a comment where the code reads it. Th
 | `VICTORY_LDS_LOOP_ATOMICS` | on (in the code) | shared-memory atomics in loops do not wait for the whole thread group (`0`: they do, as before): the cloud tiles' sort keeps all its tiles |
 | `VICTORY_ACTIVATE_RAYS` | on (in the code) | the screen probes' ray activation pass runs (`0`: left out, as before: magenta and violet casts) |
 | `VICTORY_SAMPLER_ORDER` | on (in the code) | static samplers are given to the driver in one fixed order in every process (list in the cache folder), so its shader cache finds the title's pipelines again (`0`: in the order each run makes them, as before) |
+| `VICTORY_ADAPTER` | not set | the graphics card to run on, by a part of its name (not given: the card with the most memory of its own; the launcher shows the same one) |
+| `VICTORY_TEXSPK_PASS_MS` | launcher: `8` | a frame's runs of the pass over textures picked by index take at most this many ms together; the rest waits a frame (`0`: each run 16 ms on its own). By Dastano (PR #13) |
+| `VICTORY_PASSES_HOT` | launcher: `1` | the helper threads are woken at each submission's start (µs they wait awake; `0`: off). By Dastano (PR #13) |
+| `VICTORY_PRELUDE_POOL` | on (in the code) | the small lists that run before a list's work come from a shared pool while that work runs (`0`: each list keeps its own: about 1,100 alive instead of about 190) |
 | `VICTORY_WIDE_THREADS` | three eighths of the logical processors, 2 to 8 | the threads that copy changed title buffers for a submission (it was a quarter, 2 to 6) |
 | `VICTORY_HELPER_PRIORITY` | `1` | the layer's threads that a frame waits for run above normal priority (`0`: normal) |
 | `VICTORY_PRELUDE_UPLOADS`, `VICTORY_SHOW_NEW_LATER`, `VICTORY_TABLED_REREAD` | on | texture upload order and slot changes (flicker, device losses) |

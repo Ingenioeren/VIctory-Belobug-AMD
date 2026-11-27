@@ -2337,6 +2337,12 @@ pub(crate) fn let_go_idle() {
                 // state of the texture let go (it says "uploaded").
                 crate::texture::unstage(at as This);
                 r.host.wanted.store(u32::MAX, Relaxed);
+                // Not used since: the looks pass it by (`used == 0`) until
+                // a use makes its copy again. Kept, it stayed idle and every
+                // look over the line sorted and locked it, finding nothing
+                // to let go: a look cost 3 ms after a minute and 14 ms after
+                // 30 (issue #12). The next use stamps it under this lock.
+                r.host.used.store(0, Relaxed);
                 made.take()
             } else {
                 None
