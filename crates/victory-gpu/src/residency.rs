@@ -16,10 +16,28 @@ use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORY
 
 const MIB: u64 = 1 << 20;
 
-/// `VICTORY_RESIDENCY=1`: the memory budgets of this module (off by default).
+/// `VICTORY_LOW_MEMORY=1`: the cheaper settings for a PC with 12 GB of video
+/// memory and 32 GB of RAM, each of which can still be set on its own. For
+/// now it turns on this module's budgets (as `VICTORY_RESIDENCY=1` does).
+pub(crate) fn low_memory() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        let on = std::env::var_os("VICTORY_LOW_MEMORY").is_some_and(|v| v == "1");
+        if on {
+            tracing::info!("low-memory mode (VICTORY_LOW_MEMORY=1): host-memory budgets on unless VICTORY_RESIDENCY is set");
+        }
+        on
+    })
+}
+
+/// `VICTORY_RESIDENCY=1`: the memory budgets of this module (off by default;
+/// on with [`low_memory`] when `VICTORY_RESIDENCY` is not set).
 pub(crate) fn on() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("VICTORY_RESIDENCY").is_some_and(|v| v == "1"))
+    *ON.get_or_init(|| match std::env::var_os("VICTORY_RESIDENCY") {
+        Some(v) => v == "1",
+        None => low_memory(),
+    })
 }
 const GIB: u64 = 1 << 30;
 static PRESSURED: AtomicBool = AtomicBool::new(false);
