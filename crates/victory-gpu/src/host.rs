@@ -1911,10 +1911,11 @@ fn timing() -> bool {
     *ON.get_or_init(|| crate::switch::on("VICTORY_GPU_TIMING"))
 }
 
-/// `VICTORY_SPLIT_SUBMIT=N` (off by default): a submission that is waited
-/// for in order (no late wait) goes to the queue as one ExecuteCommandLists
-/// per N of its runs (each run with its prelude) instead of one call for
-/// all, still followed by one signal and one wait. On a 12 GB RDNA2 card
+/// `VICTORY_SPLIT_SUBMIT=N` (off by default): a submission goes to the
+/// queue as one ExecuteCommandLists per N of its runs (each run with its
+/// prelude) instead of one call for all, still followed by one signal (and,
+/// in order, one wait). Sent ahead (`VICTORY_LATE_WAIT`), the cuts add to
+/// those of `VICTORY_JOIN_PARTS`. On a 12 GB RDNA2 card
 /// near its memory budget the timing run (`VICTORY_GPU_TIMING`), which
 /// sends each list on its own, took 209 ms of card time a frame against
 /// 800-1250 ms for the same frames in one call: every call's memory has to
@@ -5981,7 +5982,16 @@ impl Host {
                 lists.push(Some(behind));
                 firsts.iter_mut().for_each(|first| *first += 1);
             }
-            let cuts: Vec<usize> = parts.iter().filter_map(|&n| firsts.get(n).copied()).collect();
+            let mut cuts: Vec<usize> = parts.iter().filter_map(|&n| firsts.get(n).copied()).collect();
+            // `VICTORY_SPLIT_SUBMIT`: the same cut at every Nth run's first
+            // list as in order, so one call does not name a whole
+            // submission's memory at once.
+            if let n @ 1.. = split_submit() {
+                cuts.extend(firsts.iter().copied().skip(n).step_by(n));
+                cuts.retain(|&c| c > 0 && c < lists.len());
+                cuts.sort_unstable();
+                cuts.dedup();
+            }
             // SAFETY: closed lists; the fence is ours.
             let signalled = unsafe {
                 let mut from = 0;
